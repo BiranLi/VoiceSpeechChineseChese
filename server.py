@@ -34,12 +34,11 @@ DEFAULT_PORT = 6324
 
 # ============ 语音识别 (ASR) 配置 ============
 # API Key 来源优先级：命令行 --asr-api-key > 环境变量 DASHSCOPE_API_KEY
-# 模型默认使用 qwen3-asr-flash（OpenAI 兼容 + Base64 音频直传，同步返回，最稳）
-DEFAULT_ASR_MODEL = "qwen3-asr-flash"
+# 默认模型 fun-asr-flash-2026-06-15：百聆 2026 快照，支持 Base64 音频直传 + 同步返回
+# （经实测：~370ms 返回，棋谱短句识别准确率高，天然适配本地无公网 URL 的代理场景）
+DEFAULT_ASR_MODEL = "fun-asr-flash-2026-06-15"
 DASHSCOPE_ENV_KEY = "DASHSCOPE_API_KEY"
-# OpenAI 兼容端点（qwen3-asr-flash 系列）
-DASHSCOPE_OPENAI_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-# DashScope 原生同步端点（qwen-audio-3.0-asr-flash / fun-asr 等）
+# DashScope 原生同步端点（fun-asr-flash / qwen-audio-3.0-asr-flash 等）
 DASHSCOPE_NATIVE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 
 
@@ -84,42 +83,35 @@ class MultiProcessStaticHandler(SimpleHTTPRequestHandler):
             self._send_json(500, {"ok": False, "error": f"语音识别失败: {exc}"})
 
     def _transcribe(self, audio_b64: str, mime: str) -> str:
-        """转发音频到阿里云百炼，返回识别文本"""
+        """转发音频到阿里云百炼，返回识别文本
+
+        fun-asr-flash 系列走 DashScope 原生同步协议，实测正确的请求体：
+          parameters.format = wav（不传会报 UNSUPPORTED_FORMAT）
+        """
         data_url = f"data:{mime};base64,{audio_b64}"
 
-        if self.asr_model.startswith("qwen3-asr"):
-            # OpenAI 兼容协议（支持 Base64 音频直传，同步返回）
-            body = {
-                "model": self.asr_model,
-                "stream": False,
-                "messages": [{
-                    "role": "user",
-                    "content": [{
-                        "type": "input_audio",
-                        "input_audio": {"data": data_url, "format": "wav"},
-                    }],
-                }],
-            }
-            resp = self._post_json(DASHSCOPE_OPENAI_URL, body)
-            try:
-                return resp["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, TypeError):
-                raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}")
-        else:
-            # DashScope 原生同步协议（qwen-audio-3.0-asr-flash / fun-asr 等）
-            body = {
-                "model": self.asr_model,
-                "input": {"messages": [{
-                    "role": "user",
-                    "content": [{"audio": data_url}],
-                }]},
-                "parameters": {"asr_options": {}},
-            }
-            resp = self._post_json(DASHSCOPE_NATIVE_URL, body)
-            try:
-                return resp["output"]["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, TypeError):
-                raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}")
+        # DashScope 原生同步协议（fun-asr-flash / qwen-audio-3.0-asr-flash 等）
+        body = {
+            "model": self.asr_model,
+            "input": {"messages": [{
+                "role": "user",
+                "content": [{"audio": data_url}],
+            }]},
+            "parameters": {"format": "wav"},
+        }
+        resp = self._post_json(DASHSCOPE_NATIVE_URL, body)
+        try:
+            # fun-asr-flash 返回 output.output.sentence.text
+            return resp["output"]["output"]["sentence"]["text"].strip()
+        except (KeyError, IndexError, TypeError):
+            pass
+        try:
+            # 兼容 qwen-audio-3.0-asr-flash 的 output.choices[].message.content 结构
+            c = resp["output"]["choices"][0]["message"]["content"]
+            text = c[0]["text"] if isinstance(c, list) else c["text"]
+            return str(text).strip()
+        except (KeyError, IndexError, TypeError):
+            raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}")
 
     def _post_json(self, url: str, body: dict):
         """向百炼发起 JSON POST 请求并解析响应"""
@@ -175,7 +167,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--asr-model",
         default=DEFAULT_ASR_MODEL,
-        help=f"语音识别模型，默认 {DEFAULT_ASR_MODEL}（OpenAI 兼容）。可选 qwen-audio-3.0-asr-flash 等（DashScope 协议）。",
+        help=f"语音识别模型，默认 {DEFAULT_ASR_MODEL}（DashScope 同步，Base64 直传）。可选 qwen-audio-3.0-asr-flash 等。",
     )
     return parser.parse_args()
 
