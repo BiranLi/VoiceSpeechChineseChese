@@ -131,6 +131,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }, 500);
       } else if (gameMode === 'pve') {
         updateAiCurrentStatus('AI 落子完成。轮到玩家思考落子...');
+        maybeAutoListen(); // 语音模式开启时，AI 走完自动重新收音
       }
     }
   }
@@ -368,11 +369,13 @@ document.addEventListener('DOMContentLoaded', function () {
   // 结束对局：重置棋局，返回主菜单
   function handleStop() {
     // 若正在录音，先取消
-    if (chessVoice && isRecording) {
-      isRecording = false;
-      if (voiceBtn) voiceBtn.classList.remove('recording');
-      chessVoice.cancel();
+    if (chessVoice && isListening) {
+      isListening = false;
+      if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
+      chessVoice.stopAuto();
     }
+    voiceEnabled = false; // 结束对局时关闭语音模式
+    if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
 
     gamePaused = false;
     updatePauseBtnLabel(false);
@@ -399,10 +402,11 @@ document.addEventListener('DOMContentLoaded', function () {
   if (undoBtn) undoBtn.addEventListener('click', handleUndo);
   if (stopBtn) stopBtn.addEventListener('click', handleStop);
 
-  // ============ 语音控制下棋 ============
+  // ============ 语音控制下棋（自动收音 + VAD） ============
 
   let chessVoice = null;
-  let isRecording = false;
+  let voiceEnabled = false;   // 语音模式是否开启
+  let isListening = false;    // 当前是否正在自动收音（VAD 监听中）
 
   // 语音识别结果 → 记谱解析 → 落子
   function handleVoiceText(text) {
@@ -421,6 +425,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const result = parseChessNotation(game, text);
     if (result.error) {
       updateAiCurrentStatus(`🎙️ ${result.error}`);
+      maybeAutoListen(); // 解析失败，重新开始收音
       return;
     }
 
@@ -428,19 +433,35 @@ document.addEventListener('DOMContentLoaded', function () {
     const fromPiece = game.board[result.from];
     if (gameMode === 'pve' && fromPiece && fromPiece.color !== playerSide) {
       updateAiCurrentStatus(`🎙️ 识别: ${text} —— 现在轮到${playerSide === 'r' ? '黑方' : '红方'}，不能说己方之外的着法`);
+      maybeAutoListen();
       return;
     }
 
     // 复用人类落子入口（含 AI 应手、胜负判定、统计表）
     handleHumanMove(result.from, result.to);
     updateAiCurrentStatus(`🎙️ 已落子: ${result.notation}（${text}）`);
+    // 落子后轮到 AI 思考，自动模式会在 AI 落子后由 maybeAutoListen 重新收音
   }
 
-  // 语音按钮：点击开始/停止录音
+  // 条件重新收音：语音开启 + 人机模式 + 轮到玩家 + 未暂停 → resume VAD
+  function maybeAutoListen() {
+    if (!voiceEnabled || !chessVoice) return;
+    if (gameMode !== 'pve') return;
+    if (gamePaused) return;
+    if (game.turn !== playerSide) return; // 轮到 AI，不收音
+    chessVoice.resume();
+    updateAiCurrentStatus('🎙️ 请说棋步…');
+  }
+
+  // 语音按钮：开关语音模式（开启后自动收音，AI 走完直接说棋步）
   if (voiceBtn) {
     voiceBtn.addEventListener('click', async function () {
       if (gamePaused) {
         updateAiCurrentStatus('对局已暂停，请先点击“继续”再使用语音');
+        return;
+      }
+      if (gameMode === 'eve') {
+        updateAiCurrentStatus('机机对战模式不支持语音控制');
         return;
       }
 
@@ -450,8 +471,14 @@ document.addEventListener('DOMContentLoaded', function () {
           onResult: handleVoiceText,
           onError: function (msg) {
             updateAiCurrentStatus('🎙️ ' + msg);
-            isRecording = false;
+            isListening = false;
             if (voiceBtn) voiceBtn.classList.remove('recording');
+          },
+          onStateChange: function (state) {
+            isListening = (state === 'listening');
+            if (voiceBtn) {
+              voiceBtn.classList.toggle('recording', state === 'listening');
+            }
           }
         });
       }
@@ -461,18 +488,28 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
-      if (isRecording) {
-        // 停止并识别
-        isRecording = false;
-        if (voiceBtn) voiceBtn.classList.remove('recording');
-        await chessVoice.stop();
+      if (voiceEnabled) {
+        // 关闭语音模式
+        voiceEnabled = false;
+        isListening = false;
+        chessVoice.stopAuto();
+        if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
+        updateAiCurrentStatus('语音控制已关闭');
       } else {
-        // 开始录音
+        // 开启语音模式
+        voiceEnabled = true;
+        if (voiceBtn) voiceBtn.classList.add('voice-on');
         try {
-          await chessVoice.start();
-          isRecording = true;
-          if (voiceBtn) voiceBtn.classList.add('recording');
+          await chessVoice.startAuto();
+          if (game.turn !== playerSide) {
+            // 当前轮到 AI，先暂停收音，AI 落子后再听
+            chessVoice.pause();
+            updateAiCurrentStatus('🎙️ 语音已开启。轮到 AI，AI 落子后将自动收音…');
+          }
+          // 轮到玩家则由 startAuto 直接进入监听
         } catch (err) {
+          voiceEnabled = false;
+          if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
           updateAiCurrentStatus('🎙️ 无法访问麦克风: ' + (err && err.message ? err.message : err));
         }
       }
