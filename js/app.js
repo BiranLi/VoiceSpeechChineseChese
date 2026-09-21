@@ -304,15 +304,17 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  // ============ 对局控制：暂停/继续 · 悔棋 · 结束 ============
+  // ============ 对局控制：语音 · 暂停/继续 · 悔棋 · 结束 ============
 
   const pauseBtn = document.getElementById('pausebtn');
   const undoBtn = document.getElementById('undobtn');
   const stopBtn = document.getElementById('stopbtn');
+  const voiceBtn = document.getElementById('voicebtn');
 
   function setControlsEnabled(enabled) {
     if (pauseBtn) pauseBtn.disabled = !enabled;
     if (stopBtn) stopBtn.disabled = !enabled;
+    if (voiceBtn) voiceBtn.disabled = !enabled;
     if (undoBtn) {
       undoBtn.disabled = !enabled || (gameMode === 'eve'); // 机机对战不支持悔棋
     }
@@ -365,6 +367,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 结束对局：重置棋局，返回主菜单
   function handleStop() {
+    // 若正在录音，先取消
+    if (chessVoice && isRecording) {
+      isRecording = false;
+      if (voiceBtn) voiceBtn.classList.remove('recording');
+      chessVoice.cancel();
+    }
+
     gamePaused = false;
     updatePauseBtnLabel(false);
     setControlsEnabled(false);
@@ -389,4 +398,84 @@ document.addEventListener('DOMContentLoaded', function () {
   if (pauseBtn) pauseBtn.addEventListener('click', togglePause);
   if (undoBtn) undoBtn.addEventListener('click', handleUndo);
   if (stopBtn) stopBtn.addEventListener('click', handleStop);
+
+  // ============ 语音控制下棋 ============
+
+  let chessVoice = null;
+  let isRecording = false;
+
+  // 语音识别结果 → 记谱解析 → 落子
+  function handleVoiceText(text) {
+    if (!text) return;
+    updateAiCurrentStatus(`🎙️ 识别: ${text}`);
+
+    if (gamePaused) {
+      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 对局已暂停，请先点击“继续”`);
+      return;
+    }
+    if (gameMode === 'eve') {
+      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 机机对战模式不支持语音操控`);
+      return;
+    }
+
+    const result = parseChessNotation(game, text);
+    if (result.error) {
+      updateAiCurrentStatus(`🎙️ ${result.error}`);
+      return;
+    }
+
+    // 人机对战时校验是否轮到玩家阵营
+    const fromPiece = game.board[result.from];
+    if (gameMode === 'pve' && fromPiece && fromPiece.color !== playerSide) {
+      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 现在轮到${playerSide === 'r' ? '黑方' : '红方'}，不能说己方之外的着法`);
+      return;
+    }
+
+    // 复用人类落子入口（含 AI 应手、胜负判定、统计表）
+    handleHumanMove(result.from, result.to);
+    updateAiCurrentStatus(`🎙️ 已落子: ${result.notation}（${text}）`);
+  }
+
+  // 语音按钮：点击开始/停止录音
+  if (voiceBtn) {
+    voiceBtn.addEventListener('click', async function () {
+      if (gamePaused) {
+        updateAiCurrentStatus('对局已暂停，请先点击“继续”再使用语音');
+        return;
+      }
+
+      if (!chessVoice) {
+        chessVoice = new ChessVoice({
+          onStatus: updateAiCurrentStatus,
+          onResult: handleVoiceText,
+          onError: function (msg) {
+            updateAiCurrentStatus('🎙️ ' + msg);
+            isRecording = false;
+            if (voiceBtn) voiceBtn.classList.remove('recording');
+          }
+        });
+      }
+
+      if (!chessVoice.isSupported()) {
+        updateAiCurrentStatus('🎙️ 当前浏览器不支持语音识别（需 Chrome/Edge 等）');
+        return;
+      }
+
+      if (isRecording) {
+        // 停止并识别
+        isRecording = false;
+        if (voiceBtn) voiceBtn.classList.remove('recording');
+        await chessVoice.stop();
+      } else {
+        // 开始录音
+        try {
+          await chessVoice.start();
+          isRecording = true;
+          if (voiceBtn) voiceBtn.classList.add('recording');
+        } catch (err) {
+          updateAiCurrentStatus('🎙️ 无法访问麦克风: ' + (err && err.message ? err.message : err));
+        }
+      }
+    });
+  }
 });

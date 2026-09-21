@@ -40,6 +40,27 @@
   border-color: rgba(229, 57, 53, 0.8);
 }
 
+.ctl-btn-voice {
+  border-color: rgba(78, 205, 120, 0.4);
+  color: #7be8a2;
+}
+
+.ctl-btn-voice:hover:not(:disabled) {
+  border-color: rgba(78, 205, 120, 0.8);
+}
+
+.ctl-btn-voice.recording {
+  background: linear-gradient(180deg, #1f7a45 0%, #14522e 100%);
+  border-color: #4ecd78;
+  color: #ffffff;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes voice-pulse {
+  0%, 100% { box-shadow: 0 0 4px rgba(78, 205, 120, 0.5); }
+  50% { box-shadow: 0 0 16px rgba(78, 205, 120, 0.95); }
+}
+
 #content #content-title .title-counter {
   margin: 0 20px;
   width: 76px;
