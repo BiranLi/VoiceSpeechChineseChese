@@ -1,3 +1,45 @@
+/* 对局控制条：暂停/继续 · 悔棋 · 结束 */
+#game-controls {
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.ctl-btn {
+  min-width: 96px;
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-btn);
+  background: linear-gradient(180deg, #3a3f47 0%, #282c34 100%);
+  color: var(--color-text-main);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: transform var(--transition-fast), background var(--transition-fast), opacity var(--transition-fast);
+  user-select: none;
+}
+
+.ctl-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  background: linear-gradient(180deg, #484e58 0%, #323742 100%);
+}
+
+.ctl-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ctl-btn-danger {
+  border-color: rgba(229, 57, 53, 0.4);
+  color: #ff8a80;
+}
+
+.ctl-btn-danger:hover:not(:disabled) {
+  border-color: rgba(229, 57, 53, 0.8);
+}
+
 #content #content-title .title-counter {
   margin: 0 20px;
   width: 76px;

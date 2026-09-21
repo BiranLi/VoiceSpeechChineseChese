@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', function () {
   let worker = null;
   let latestInfo = null;
   let lastMove = null;
+  let gamePaused = false; // 对局暂停标志：阻止走子与 AI 搜索，丢弃在算结果
 
   // 初始化 ElephantEye Worker 算力桥接
   try {
@@ -53,7 +54,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  function checkGameOver(moveResult, info) {
+  function checkGameOver() {
     if (!game) return false;
 
     // 1. 物理检查：判断棋盘上红帅 ('r') 与黑将 ('b') 是否被吃掉
@@ -106,6 +107,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 处理 AI 最佳落子
   function handleAiBestMove(ucciMove, info) {
+    if (gamePaused) return; // 暂停期间丢弃 AI 搜索结果
+
     const sq = game.ucciToSq(ucciMove);
     if (!sq) return;
 
@@ -117,7 +120,7 @@ document.addEventListener('DOMContentLoaded', function () {
       appendMoveToTable('AI', moveResult, info);
 
       // 检测是否触发判赢/判输
-      if (checkGameOver(moveResult, info)) {
+      if (checkGameOver()) {
         return;
       }
 
@@ -164,10 +167,15 @@ document.addEventListener('DOMContentLoaded', function () {
     playerSide = side || 'r';
     moveCount = 0;
     lastMove = null;
+    gamePaused = false; // 新对局复位暂停状态
 
     game = new Xiangqi();
     window.gameInstance = game;
     board.render(game, lastMove);
+
+    // 启用对局控制按钮（机机对战禁用悔棋）
+    setControlsEnabled(true);
+    updatePauseBtnLabel(false);
 
     // 更新顶栏角色身份
     updateRoleTags(gameMode, playerSide);
@@ -187,6 +195,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 处理人类玩家落子
   function handleHumanMove(from, to) {
+    if (gamePaused) return; // 暂停期间禁止落子
     if (gameMode === 'eve') {
       // 机机对战模式下禁止人类手动操控
       return;
@@ -205,7 +214,7 @@ document.addEventListener('DOMContentLoaded', function () {
       board.render(game, lastMove);
       appendMoveToTable('玩家', moveResult, null);
 
-      if (checkGameOver(moveResult, null)) {
+      if (checkGameOver()) {
         return;
       }
 
@@ -218,6 +227,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 触发象眼 AI 思考
   function triggerAiThink() {
+    if (gamePaused) return; // 暂停期间不发起新的搜索
+
     const currentFen = game.fen();
     if (worker) {
       worker.postMessage({
@@ -255,16 +266,18 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
 
-    tr.innerHTML = `
-      <td>${moveCount}</td>
-      <td>${sideText}</td>
-      <td class="${sourceClass}">${source}</td>
-      <td>${moveStr}</td>
-      <td>${nodesStr}</td>
-      <td>${npsStr}</td>
-      <td>${timeStr}</td>
-      <td class="${scoreClass}">${scoreStr}</td>
-    `;
+    // 使用 DOM API 构建行，避免 innerHTML 拼接（防 XSS）
+    const cellData = [
+      String(moveCount), sideText, source, moveStr,
+      nodesStr, npsStr, timeStr, scoreStr
+    ];
+    cellData.forEach((text, idx) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (idx === 2) td.className = sourceClass;
+      if (idx === 7) td.className = scoreClass;
+      tr.appendChild(td);
+    });
 
     tbody.appendChild(tr);
     const wrap = document.getElementById('ai-table-wrap');
@@ -290,4 +303,90 @@ document.addEventListener('DOMContentLoaded', function () {
       currentEl.innerText = msg;
     }
   }
+
+  // ============ 对局控制：暂停/继续 · 悔棋 · 结束 ============
+
+  const pauseBtn = document.getElementById('pausebtn');
+  const undoBtn = document.getElementById('undobtn');
+  const stopBtn = document.getElementById('stopbtn');
+
+  function setControlsEnabled(enabled) {
+    if (pauseBtn) pauseBtn.disabled = !enabled;
+    if (stopBtn) stopBtn.disabled = !enabled;
+    if (undoBtn) {
+      undoBtn.disabled = !enabled || (gameMode === 'eve'); // 机机对战不支持悔棋
+    }
+  }
+
+  function updatePauseBtnLabel(paused) {
+    if (pauseBtn) pauseBtn.innerText = paused ? '继续' : '暂停';
+  }
+
+  // 暂停 / 继续
+  function togglePause() {
+    if (!game) return;
+    gamePaused = !gamePaused;
+    updatePauseBtnLabel(gamePaused);
+
+    if (gamePaused) {
+      updateAiCurrentStatus('对局已暂停。点击“继续”恢复对局。');
+    } else {
+      updateAiCurrentStatus('对局继续。');
+      // 若暂停前轮到 AI 思考（机机对战 / 人机轮到 AI），恢复后重新触发搜索
+      if (gameMode === 'eve') {
+        triggerAiThink();
+      } else if (gameMode === 'pve' && game.turn !== playerSide) {
+        triggerAiThink();
+      }
+    }
+  }
+
+  // 悔棋：人机模式轮到玩家时撤两步（AI 一步 + 玩家一步），否则撤一步；双人模式撤一步
+  function handleUndo() {
+    if (!game || game.history.length === 0 || gameMode === 'eve') return;
+
+    let steps = 1;
+    if (gameMode === 'pve' && game.turn === playerSide && game.history.length >= 2) {
+      steps = 2; // 轮到玩家时，把 AI 的上一步也一起撤回
+    }
+
+    for (let i = 0; i < steps; i++) {
+      if (game.history.length > 0) {
+        game.undo();
+      }
+    }
+
+    moveCount = Math.max(0, moveCount - steps);
+    lastMove = null;
+    board.render(game, lastMove);
+    removeAiStatsRows(steps);
+    updateAiCurrentStatus(`已悔棋 ${steps} 步。请重新落子...`);
+  }
+
+  // 结束对局：重置棋局，返回主菜单
+  function handleStop() {
+    gamePaused = false;
+    updatePauseBtnLabel(false);
+    setControlsEnabled(false);
+
+    const boardOptions = document.getElementById('board-options');
+    if (boardOptions) boardOptions.classList.remove('hide');
+
+    clearAiStatsTable();
+    updateAiCurrentStatus('对局已结束，请选择模式重新开始。');
+  }
+  // 从 AI 统计表中移除最后 n 行（悔棋时同步回退）
+  function removeAiStatsRows(n) {
+    const tbody = document.getElementById('ai-stats-body');
+    if (!tbody) return;
+    for (let i = 0; i < n; i++) {
+      const rows = tbody.querySelectorAll('tr');
+      if (rows.length === 0 || rows[0].id === 'ai-stats-empty') break;
+      tbody.removeChild(rows[rows.length - 1]);
+    }
+  }
+
+  if (pauseBtn) pauseBtn.addEventListener('click', togglePause);
+  if (undoBtn) undoBtn.addEventListener('click', handleUndo);
+  if (stopBtn) stopBtn.addEventListener('click', handleStop);
 });

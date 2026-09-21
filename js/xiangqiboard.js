@@ -37,10 +37,16 @@
   XiangqiBoard.prototype.initDOM = function () {
     if (!this.container) return;
     this.container.innerHTML = '';
-    
+
+    // 底层：标准中国象棋棋盘线 (SVG) —— 竖线楚河区断开、上下横线、九宫斜线、炮位/兵位十字标记、粗外框
+    const linesLayer = document.createElement('div');
+    linesLayer.className = 'xiangqi-lines-layer';
+    linesLayer.style.cssText = 'position:absolute; inset:0; pointer-events:none; z-index:1;';
+    linesLayer.appendChild(this.buildBoardLinesSVG());
+
     const boardGrid = document.createElement('div');
     boardGrid.className = 'xiangqi-board-grid';
-    boardGrid.style.cssText = 'position:relative; width:100%; height:100%; display:grid; grid-template-columns: repeat(9, 1fr); grid-template-rows: repeat(10, 1fr);';
+    boardGrid.style.cssText = 'position:relative; width:100%; height:100%; display:grid; grid-template-columns: repeat(9, 1fr); grid-template-rows: repeat(10, 1fr); z-index:2;';
 
     for (let r = 0; r < 10; r++) {
       for (let c = 0; c < 9; c++) {
@@ -48,31 +54,32 @@
         const cell = document.createElement('div');
         cell.className = 'xiangqi-cell';
         cell.dataset.sq = sqIndex;
-        cell.style.cssText = 'position:relative; display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none; border:1px solid rgba(141,91,40,0.2);';
+        cell.style.cssText = 'position:relative; display:flex; align-items:center; justify-content:center; cursor:pointer; user-select:none;';
         
         cell.addEventListener('click', this.onCellClick.bind(this, sqIndex));
         boardGrid.appendChild(cell);
       }
     }
     
+    this.container.appendChild(linesLayer);
     this.container.appendChild(boardGrid);
 
-    // 渲染经典中国象棋“楚 河 漢 界”河界水墨大字
+    // 渲染经典中国象棋“楚 河 漢 界”河界水墨大字（置于第 4/5 排之间的河界带）
     const riverLayer = document.createElement('div');
     riverLayer.className = 'xiangqi-river-layer';
     riverLayer.style.cssText = `
       position: absolute;
-      top: 40%;
+      top: 45%;
       left: 0;
       width: 100%;
-      height: 20%;
+      height: 10%;
       display: flex;
       align-items: center;
       justify-content: space-around;
       pointer-events: none;
-      z-index: 2;
+      z-index: 3;
       font-family: "Kaiti SC", "STKaiti", "KaiTi", serif;
-      font-size: 26px;
+      font-size: 24px;
       font-weight: 900;
       color: rgba(100, 60, 20, 0.45);
       letter-spacing: 12px;
@@ -87,6 +94,87 @@
     riverLayer.appendChild(riverLeft);
     riverLayer.appendChild(riverRight);
     this.container.appendChild(riverLayer);
+  };
+
+  // 生成标准中国象棋棋盘线 SVG 元素（9 列 x 10 行，线穿过格子中心，棋子位于交叉点上）
+  XiangqiBoard.prototype.buildBoardLinesSVG = function () {
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    const W = 600, H = 600;
+    const colW = W / 9;   // 66.67
+    const rowH = H / 10;  // 60
+    const LINE = '#8b5a2b';
+    const w = 1.6;
+
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'xiangqi-lines');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.setAttribute('preserveAspectRatio', 'none');
+    svg.style.cssText = 'width:100%; height:100%; display:block;';
+
+    const addLine = function (x1, y1, x2, y2, strokeWidth) {
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', x1);
+      line.setAttribute('y1', y1);
+      line.setAttribute('x2', x2);
+      line.setAttribute('y2', y2);
+      line.setAttribute('stroke', LINE);
+      line.setAttribute('stroke-width', strokeWidth);
+      svg.appendChild(line);
+    };
+
+    // 粗外框
+    const frame = document.createElementNS(SVG_NS, 'rect');
+    frame.setAttribute('x', 3);
+    frame.setAttribute('y', 3);
+    frame.setAttribute('width', W - 6);
+    frame.setAttribute('height', H - 6);
+    frame.setAttribute('fill', 'none');
+    frame.setAttribute('stroke', LINE);
+    frame.setAttribute('stroke-width', 4);
+    frame.setAttribute('rx', 2);
+    svg.appendChild(frame);
+
+    // 9 条竖线：楚河区 (y 270~330) 断开，形成河界
+    for (let i = 0; i < 9; i++) {
+      const x = (i + 0.5) * colW;
+      addLine(x, 3, x, rowH * 4.5, w);
+      addLine(x, rowH * 5.5, x, H - 3, w);
+    }
+
+    // 横线：上半 5 条 (y 30..270)，下半 5 条 (y 330..570)，河界区无横线
+    for (let j = 0; j < 5; j++) {
+      const yTop = (j + 0.5) * rowH;
+      const yBot = (j + 5.5) * rowH;
+      addLine(3, yTop, W - 3, yTop, w);
+      addLine(3, yBot, W - 3, yBot, w);
+    }
+
+    // 九宫斜线：上九宫 (row0-2, col3-5)，下九宫 (row7-9, col3-5)
+    const px1 = 3.5 * colW, px2 = 5.5 * colW;
+    const pyTop1 = 0.5 * rowH, pyTop2 = 2.5 * rowH;
+    const pyBot1 = 7.5 * rowH, pyBot2 = 9.5 * rowH;
+    addLine(px1, pyTop1, px2, pyTop2, w);
+    addLine(px2, pyTop1, px1, pyTop2, w);
+    addLine(px1, pyBot1, px2, pyBot2, w);
+    addLine(px2, pyBot1, px1, pyBot2, w);
+
+    // 炮位十字标记：黑 (col1,row2)/(col7,row2)，红 (col1,row7)/(col7,row7)
+    // 兵位十字标记：黑 (col0,2,4,6,8, row3)，红 (col0,2,4,6,8, row6)
+    const addCross = function (x, y) {
+      addLine(x - 6, y, x + 6, y, w);
+      addLine(x, y - 6, x, y + 6, w);
+    };
+
+    [1, 7].forEach(ci => {
+      addCross((ci + 0.5) * colW, 2.5 * rowH); // 黑炮
+      addCross((ci + 0.5) * colW, 7.5 * rowH); // 红炮
+    });
+    [0, 2, 4, 6, 8].forEach(ci => {
+      addCross((ci + 0.5) * colW, 3.5 * rowH); // 黑兵
+      addCross((ci + 0.5) * colW, 6.5 * rowH); // 红兵
+    });
+
+    return svg;
   };
 
   // 根据 Xiangqi 实例数据更新渲染棋盘
