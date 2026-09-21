@@ -1,0 +1,2 @@
+# VoiceSpeechChineseChese
+一个用语音控制象棋走棋的开源象棋对战
