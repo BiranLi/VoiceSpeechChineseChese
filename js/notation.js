@@ -27,7 +27,7 @@
     '兵': 'p', '卒': 'p'
   };
 
-  const FILE_DIGITS = '一二三四五六七八九123456789';
+  const FILE_DIGITS = '一二三四五六七八九123456789'; // eslint-disable-line no-unused-vars
 
   // 全角/汉字数字 → 阿拉伯数字 (1-9)
   function digitToNumber(ch) {
@@ -58,30 +58,54 @@
     if (!game || !text) return { error: '空记谱' };
 
     // 1. 清理：去空白/标点，统一棋子用字
-    let s = String(text).replace(/[\s，。、！？!?,.·：:]/g, '');
+    let s = String(text).replace(/[\s，。、！？!?,.·：:]/g, ''); // eslint-disable-line prefer-const
     if (!s) return { error: '空记谱' };
 
-    // 2. 正则拆解： [前|后] 棋子 列号 动作 目标
-    //    允许末位也用汉字/数字
-    const m = s.match(/^(前|后)?([帅将士相象马车炮兵卒馬車砲])([一二三四五六七八九1-9])(平|进|退)([一二三四五六七八九1-9])$/);
+    // 2. 正则拆解： [前|后] 棋子 [列号] 动作 目标
+    //    标准记谱中带“前/后”时省略列号（如“前炮平五”）；不带前/后时必须带列号（如“炮二平五”）
+    const m = s.match(/^(前|后)?([帅将士仕相象马车炮兵卒馬車砲])([一二三四五六七八九1-9])?(平|进|退)([一二三四五六七八九1-9])$/);
     if (!m) {
-      return { error: `无法解析记谱「${text}」（应为：棋子+列号+进/平/退+数字）` };
+      return { error: `无法解析记谱「${text}」（应为：棋子+列号+进/平/退+数字，或 前/后+棋子+动作+数字）` };
     }
 
     const front = m[1];                 // '前' | '后' | undefined
     const pieceName = m[2];
-    const startDigit = digitToNumber(m[3]);
+    const startDigit = m[3] ? digitToNumber(m[3]) : null; // 可为空（前/后 形式省略列号）
     const action = m[4];
     const targetDigit = digitToNumber(m[5]);
     const type = PIECE_NAME_MAP[pieceName];
     const turn = game.turn;             // 'r' | 'b'
 
-    if (startDigit === null || targetDigit === null) {
+    if (targetDigit === null) {
       return { error: `记谱数字非法「${text}」` };
     }
 
-    // 3. 定位起点列
-    const fromCol = fileToCol(startDigit, turn);
+    // 3. 定位起点：
+    //    a) 带列号 → 直接定位该列
+    //    b) 前/后 无列号 → 在棋盘上找“同列存在≥2枚同型子”的列（标准记谱的省略规则）
+    let fromCol = null;
+    if (startDigit !== null) {
+      fromCol = fileToCol(startDigit, turn);
+    } else if (front === '前' || front === '后') {
+      const dupCols = [];
+      for (let col = 0; col < 9; col++) {
+        let cnt = 0;
+        for (let row = 0; row < 10; row++) {
+          const p = game.board[sqOf(row, col)];
+          if (p && p.color === turn && p.type === type) cnt++;
+        }
+        if (cnt >= 2) dupCols.push(col);
+      }
+      if (dupCols.length === 1) {
+        fromCol = dupCols[0];
+      } else if (dupCols.length === 0) {
+        return { error: `棋盘上「${pieceName}」没有同列双子，无需用「前/后」` };
+      } else {
+        return { error: `「${pieceName}」在多个列有双子，请带上列号（如 ${pieceName}二平五）` };
+      }
+    } else {
+      return { error: `记谱缺少列号「${text}」` };
+    }
 
     // 4. 找出该列上属于当前行动方的同型棋子
     const candidates = [];
@@ -92,7 +116,7 @@
       }
     }
     if (candidates.length === 0) {
-      return { error: `${startDigit} 路没有可用的「${pieceName}」` };
+      return { error: `${startDigit ?? ''}路没有可用的「${pieceName}」` };
     }
 
     // 5. 前/后 消歧：前 = 更靠近对方（红方行小、黑方行大）
@@ -119,8 +143,8 @@
     let toSq = null;
 
     if (action === '平') {
-      // 只有 车/炮/兵(过河) 能平
-      if (type !== 'r' && type !== 'c' && type !== 'p') {
+      // 只有 车/炮/兵(过河)/帅将 能平（帅将在九宫内横向移动记“平”）
+      if (type !== 'r' && type !== 'c' && type !== 'p' && type !== 'k') {
         return { error: `「${pieceName}」不能平走` };
       }
       const toCol = fileToCol(targetDigit, turn);
@@ -130,8 +154,8 @@
       const forward = (turn === 'r') ? -1 : 1; // 红方前进 = 行减，黑方前进 = 行加
       const dir = (action === '进') ? forward : -forward;
 
-      if (type === 'r' || type === 'c' || type === 'p') {
-        // 车/炮/兵：目标数字 = 步数
+      if (type === 'r' || type === 'c' || type === 'p' || type === 'k') {
+        // 车/炮/兵/帅将：目标数字 = 步数（帅/将只能在九宫走一格，即进一/退一）
         const toRow = fromRow + dir * targetDigit;
         toSq = sqOf(toRow, fromCol);
       } else if (type === 'n' || type === 'b' || type === 'a') {
@@ -165,6 +189,10 @@
   }
 
   global.parseChessNotation = parseChessNotation;
+  if (typeof window === 'undefined') {
+    // Node.js 环境：通过 module.exports 导出（见文件底部测试块）
+    return;
+  }
 })(typeof window !== 'undefined' ? window : this);
 
 // ---- Node.js 单元测试（node js/notation.js 直接运行） ----
@@ -196,7 +224,7 @@ if (typeof module !== 'undefined' && module.exports) {
 
     let pass = 0;
     const parse = module.exports.parseChessNotation;
-    cases.forEach(function (c) {
+    for (const c of cases) {
       const r = parse(game, c.text);
       if (c.expect === 'error') {
         if (r.error) { console.log(`PASS  非法/${c.text}`); pass++; }
@@ -208,7 +236,7 @@ if (typeof module !== 'undefined' && module.exports) {
       } else {
         console.log(`FAIL  ${c.text} -> got (${r.from},${r.to}) expect (${c.expect.from},${c.expect.to})`);
       }
-    });
+    }
 
     console.log(`\n记谱解析冒烟测试: ${pass}/${cases.length} 通过`);
     process.exit(pass === cases.length ? 0 : 1);
