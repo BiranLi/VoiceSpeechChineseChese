@@ -39,6 +39,16 @@ function check(name, cond) { if (cond) { pass++; console.log('PASS', name); } el
   check('过短语音提示再试', shortMsg && shortMsg.indexOf('太短') >= 0);
   check('过短语音后恢复监听', state === 'listening');
 
+  // 测试4: 识别接口抛错 → onError 被调（配合 app 侧 onError 恢复收音，修复 V1）
+  let errMsg = null;
+  v = new ChessVoice({ onResult: () => {}, onStatus: () => {}, onError: m => errMsg = m, onStateChange: () => {} });
+  v.mode = 'auto'; v._resetVad();
+  v.transcribe = async () => { throw new Error('网络中断'); };
+  for (let i = 0; i < 20; i++) v._vadProcess(chunk(0.1));
+  for (let i = 0; i < 8; i++) v._vadProcess(chunk(0));
+  await new Promise(r => setTimeout(r, 50));
+  check('识别抛错回调 onError', errMsg === '网络中断');
+
   console.log(`\nVAD 测试: ${pass}/${pass+fail} 通过`);
   process.exit(fail ? 1 : 0);
 })();

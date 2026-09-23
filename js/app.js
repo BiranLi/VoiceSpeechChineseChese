@@ -473,6 +473,7 @@ document.addEventListener('DOMContentLoaded', function () {
             updateAiCurrentStatus('🎙️ ' + msg);
             isListening = false;
             if (voiceBtn) voiceBtn.classList.remove('recording');
+            maybeAutoListen(); // 识别失败（网络/空结果）后若仍在玩家回合，恢复自动收音
           },
           onStateChange: function (state) {
             isListening = (state === 'listening');
