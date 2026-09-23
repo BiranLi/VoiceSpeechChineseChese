@@ -73,8 +73,8 @@ python3 server.py
 # 方式二：启动参数
 python3 server.py --asr-api-key "sk-xxx"
 
-# 可选：切换 ASR 模型（默认 fun-asr-flash-2026-06-15，DashScope 同步 + Base64 直传）
-python3 server.py --asr-api-key "sk-xxx" --asr-model qwen-audio-3.0-asr-flash
+# 可选：切换 ASR 模型（默认 qwen-audio-3.1-asr-flash，DashScope 同步 + Base64 直传）
+python3 server.py --asr-api-key "sk-xxx" --asr-model fun-asr-flash-2026-06-15
 ```
 
 不配置 Key 时游戏可正常玩（人机/双人/机机），仅语音按钮提示未配置。
@@ -178,7 +178,7 @@ server.py /api/asr 代理 (Key 仅在服务器，前端不接触)
 
 ### 已实现
 
-- **语音识别**：阿里云百炼 Qwen ASR（默认 `fun-asr-flash-2026-06-15`，DashScope 同步协议 + Base64 直传，实测 ~370ms 返回）
+- **语音识别**：阿里云百炼 Qwen ASR（默认 `qwen-audio-3.1-asr-flash`，2026-09-23 发布，DashScope 同步 + Base64 直传；ASR 全线降价 95%，新模型享百炼新人免费额度）
 - **自动收音 + VAD**：AI 走完自动开始监听，本地能量检测识别人声，静音自动提交，全程免按键
 - **记谱解析器**：棋谱文本 → 落子坐标，支持"前/后"消歧、红黑方数字视角差异、汉字/阿拉伯数字、自动忽略句号等标点
 - **语音落子**：识别文本经解析后复用人类落子入口，AI 自动应手
@@ -188,9 +188,10 @@ server.py /api/asr 代理 (Key 仅在服务器，前端不接触)
 
 | 方案 | 识别 | 实测 | 结论 |
 |---|---|---|---|
-| A. 阿里云百炼 `fun-asr-flash-2026-06-15`（当前） | 在线 | ✅ Base64 直传 + 同步 ~370ms，棋谱 3/3 识别正确 | **选用**：天然适配本地无公网 URL 的代理架构 |
-| B. `qwen-audio-3.0-asr-flash-filetrans` | 在线 | ❌ 必须公网 URL（不支持 Base64/本地文件）+ 异步轮询 | 弃用：与本地离线架构冲突 |
-| C. 本地 WASM ASR（规划） | 完全离线 | 未测 | 全链路离线，工程量大 |
+| A. 阿里云百炼 `qwen-audio-3.1-asr-flash`（当前） | 在线 | ✅ Base64 直传 + 同步 ~450ms，棋谱 3/3 识别正确；2026-09-23 发布，ASR 降价 95% | **选用**：最新 + 更便宜 + 免费额度，适配本地代理架构 |
+| B. `fun-asr-flash-2026-06-15`（上一版） | 在线 | ✅ 同样可用（~370ms） | 备选：可 `--asr-model` 切换 |
+| C. `qwen-audio-3.0-asr-flash-filetrans` | 在线 | ❌ 必须公网 URL（不支持 Base64/本地文件）+ 异步轮询 | 弃用：与本地离线架构冲突 |
+| D. 本地 WASM ASR（规划） | 完全离线 | 未测 | 全链路离线，工程量大 |
 
 ### 成本参考
 

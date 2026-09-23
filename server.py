@@ -14,7 +14,6 @@ Chinese-Chess-AI 本地静态 Web 开发服务器
 from __future__ import annotations
 
 import argparse
-import base64
 import contextlib
 import functools
 import json
@@ -23,6 +22,7 @@ import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,11 +34,12 @@ DEFAULT_PORT = 6324
 
 # ============ 语音识别 (ASR) 配置 ============
 # API Key 来源优先级：命令行 --asr-api-key > 环境变量 DASHSCOPE_API_KEY
-# 默认模型 fun-asr-flash-2026-06-15：百聆 2026 快照，支持 Base64 音频直传 + 同步返回
-# （经实测：~370ms 返回，棋谱短句识别准确率高，天然适配本地无公网 URL 的代理场景）
-DEFAULT_ASR_MODEL = "fun-asr-flash-2026-06-15"
+# 默认模型 qwen-audio-3.1-asr-flash：2026-09-23 发布的 Qwen-Audio 3.1 系列
+#   - ASR 全线降价 95%（官方）；新模型通常享有百炼新人免费额度（90 天，华北2北京）
+#   - 实测：Base64 直传 + 同步返回，棋谱短句识别正确，适配本地无公网 URL 的代理场景
+DEFAULT_ASR_MODEL = "qwen-audio-3.1-asr-flash"
 DASHSCOPE_ENV_KEY = "DASHSCOPE_API_KEY"
-# DashScope 原生同步端点（fun-asr-flash / qwen-audio-3.0-asr-flash 等）
+# DashScope 原生同步端点（qwen-audio-3.1-asr-flash / fun-asr-flash 等）
 DASHSCOPE_NATIVE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 
 
@@ -111,10 +112,14 @@ class MultiProcessStaticHandler(SimpleHTTPRequestHandler):
             text = c[0]["text"] if isinstance(c, list) else c["text"]
             return str(text).strip()
         except (KeyError, IndexError, TypeError):
-            raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}")
+            raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}") from None
 
     def _post_json(self, url: str, body: dict):
         """向百炼发起 JSON POST 请求并解析响应"""
+        # 安全审计：仅允许 http/https，杜绝 file: 等自定义 scheme
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            raise RuntimeError(f"拒绝访问非 http(s) 地址: {url}")
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
