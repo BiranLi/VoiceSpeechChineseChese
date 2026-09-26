@@ -100,6 +100,42 @@
 
             <!-- 侧边 AI 搜索评分日志面板 -->
             <aside id="ai-panel">
+                <!-- ============ 语音交互面板 ============
+                     放在右侧栏、与棋盘并排，而不是叠在棋盘上方或浮在棋盘上。
+                     原因：患者必须**同时**看清「候选棋步」和「棋盘上高亮的起点→终点」；
+                     若纵向堆叠，窄屏下棋盘会被顶出视口，需要滚动才能看到高亮 ——
+                     而震颤患者滚动本身就是困难动作。 -->
+                <div id="voice-overlay" class="hide" aria-live="polite">
+                    <div id="voice-bar">
+                        <span id="voice-state-icon" class="voice-dot" aria-hidden="true"></span>
+                        <span id="voice-state-text">语音未开启</span>
+                        <span id="voice-countdown" class="hide">
+                            <span id="voice-countdown-num">0.0</span>s
+                        </span>
+                    </div>
+                    <!-- 倒计时进度条（宽度 = 剩余比例） -->
+                    <div id="voice-progress"><div id="voice-progress-fill"></div></div>
+
+                    <!-- 快捷键常驻提示：患者必须看得见才记得住 -->
+                    <div id="voice-hotkey-hint">
+                        <span><kbd>空格</kbd> 立即收音 / 确认这步</span>
+                        <span class="voice-hint-sep">·</span>
+                        <span><kbd>Esc</kbd> 取消重说</span>
+                    </div>
+
+                    <!-- 确认卡片：识别结果 + 起点终点提示（仅确认态显示） -->
+                    <div id="voice-confirm-card" class="hide">
+                        <div id="voice-confirm-label">我听到的是</div>
+                        <div id="voice-confirm-notation">—</div>
+                        <div id="voice-confirm-squares">—</div>
+                        <div id="voice-confirm-hint">按 <kbd>空格</kbd> 确认走这步 · 按 <kbd>Esc</kbd> 再说一次</div>
+                        <div id="voice-confirm-actions">
+                            <button id="voice-accept" type="button" class="voice-big-btn voice-big-btn-ok">走这步 ✓</button>
+                            <button id="voice-reject" type="button" class="voice-big-btn voice-big-btn-no">不对 ✗</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div id="ai-panel-title">AI 搜索评分</div>
                 <div id="ai-panel-subtitle">记录每一步的搜索深度、节点数、耗时、NPS 和 UCCI 评估分数。</div>
                 <div id="ai-table-wrap">

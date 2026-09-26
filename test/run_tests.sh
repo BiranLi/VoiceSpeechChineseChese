@@ -11,6 +11,21 @@ echo "      Chinese-Chess-AI 全量单元测试      "
 echo "=========================================="
 echo ""
 
+# 统一探测可用的 Python 解释器（macOS/Linux 通常是 python3，
+# Windows 上往往只有 python 或 py -3，且 python3 常常不存在）
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+elif command -v py >/dev/null 2>&1; then
+    PY="py -3"
+else
+    echo "[错误] 未找到 Python 解释器（需要 python3 / python / py -3 之一）"
+    exit 1
+fi
+echo "[OK] Python 解释器: $PY ($($PY --version 2>&1))"
+echo ""
+
 # 1. 运行 xiangqi.js 规则引擎单元测试
 echo "-> 运行 [1/5] xiangqi.js 规则引擎测试..."
 node "$SCRIPT_DIR/test_xiangqi.js"
@@ -29,12 +44,12 @@ echo ""
 
 # 4. 运行 6324 端口服务器启动与能力测试
 echo "-> 运行 [4/5] 6324 端口服务器启动与处理测试..."
-python3 "$SCRIPT_DIR/test_server_launch.py"
+$PY "$SCRIPT_DIR/test_server_launch.py"
 echo ""
 
 # 5. 运行对当前在 6324 端口运行的真实服务的探测测试
 echo "-> 运行 [5/5] 运行中 6324 服务探针测试..."
-python3 "$SCRIPT_DIR/test_running_server.py"
+$PY "$SCRIPT_DIR/test_running_server.py"
 echo ""
 
 echo "=========================================="

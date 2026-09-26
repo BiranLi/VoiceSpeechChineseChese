@@ -24,9 +24,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from socketserver import ForkingTCPServer
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_HOST = "127.0.0.1"
@@ -41,6 +40,24 @@ DEFAULT_ASR_MODEL = "qwen-audio-3.1-asr-flash"
 DASHSCOPE_ENV_KEY = "DASHSCOPE_API_KEY"
 # DashScope 原生同步端点（qwen-audio-3.1-asr-flash / fun-asr-flash 等）
 DASHSCOPE_NATIVE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+
+# ============ 并发模型：跨平台适配 ============
+# 多进程并发（fork）仅在 POSIX 平台可用，Windows 没有 os.fork()。
+# 因此这里按能力探测动态定义 ForkingHTTPServer；Windows 上自动回退到多线程并发。
+FORKING_SUPPORTED = hasattr(os, "fork")
+if FORKING_SUPPORTED:
+    try:
+        from socketserver import ForkingMixIn
+    except ImportError:  # 防御性：个别平台实现可能缺失
+        FORKING_SUPPORTED = False
+
+if FORKING_SUPPORTED:
+
+    class ForkingHTTPServer(ForkingMixIn, HTTPServer):
+        """POSIX 多进程并发服务器（Windows 上不可用，会回退为多线程）"""
+
+        allow_reuse_address = True
+        allow_reuse_port = True
 
 
 class MultiProcessStaticHandler(SimpleHTTPRequestHandler):
@@ -148,9 +165,17 @@ class MultiProcessStaticHandler(SimpleHTTPRequestHandler):
 
 
 def port_is_free(host: str, port: int) -> bool:
-    """检查指定端口是否处于可绑定闲置状态"""
+    """检查指定端口是否处于可绑定闲置状态
+
+    平台差异：Windows 的 SO_REUSEADDR 允许**重复绑定**已被占用的端口，
+    用它探测会得到「端口空闲」的错误结论，进而抢占他人端口。
+    Windows 上必须用 SO_EXCLUSIVEADDRUSE 才能得到真实的占用状态。
+    """
     with contextlib.closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if os.name == "nt":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind((host, port))
         except OSError:
@@ -193,10 +218,12 @@ def main() -> None:
     MultiProcessStaticHandler.asr_api_key = args.asr_api_key or None
     MultiProcessStaticHandler.asr_model = args.asr_model or DEFAULT_ASR_MODEL
 
-    if args.mode == "process":
-        server_class = ForkingTCPServer
+    if args.mode == "process" and FORKING_SUPPORTED:
+        server_class = ForkingHTTPServer
         mode_desc = "多进程并发 (Forking)"
     else:
+        if args.mode == "process":
+            print("提示: 当前平台不支持多进程并发（无 os.fork），已自动切换为多线程并发。", flush=True)
         server_class = ThreadingHTTPServer
         mode_desc = "多线程并发 (Threading)"
 

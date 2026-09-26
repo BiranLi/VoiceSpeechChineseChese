@@ -1,0 +1,267 @@
+/* ==========================================================================
+   语音交互浮层 —— 震颤 / 构音障碍 / 认知疲劳人群的视觉通道
+   --------------------------------------------------------------------------
+   设计原则：
+   1. 不依赖瞬时小字。状态常驻显示，变化有明显的颜色 + 尺寸对比。
+   2. 麦克风状态（休息 / 聆听 / 确认）必须一眼可辨，不能靠读小字判断。
+   3. 倒计时可见：患者知道"还有多久可以说话"，不会因不确定而放弃。
+   4. 大按钮 + 大字号：震颤下点击容错高；确认键同时有键盘兜底（空格 / Esc）。
+   ========================================================================== */
+
+/* 语音面板位于右侧栏（#ai-panel 内），与棋盘并排，互不遮挡 */
+#voice-overlay {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---------- 状态条 ---------- */
+#voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: var(--radius-card);
+  background: rgba(20, 24, 30, 0.94);
+  border: 2px solid var(--voice-accent, #4a505c);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+#voice-state-text {
+  flex: 1;
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--color-text-light);
+  line-height: 1.2;
+}
+
+#voice-countdown {
+  font-size: 26px;
+  font-weight: 900;
+  color: var(--voice-accent, #7be8a2);
+  font-variant-numeric: tabular-nums;
+  min-width: 84px;
+  text-align: right;
+}
+
+/* 状态指示点 */
+.voice-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--voice-accent, #7a808c);
+  flex: 0 0 auto;
+}
+
+/* ---------- 状态配色（整条浮层换色，一眼区分） ---------- */
+
+/* 休息态：麦克风关闭 —— 灰蓝，明确"现在不收音" */
+#voice-overlay[data-state="off"] { --voice-accent: #7a808c; }
+#voice-overlay[data-state="rest"] { --voice-accent: #7ab8ff; }
+#voice-overlay[data-state="calibrating"] { --voice-accent: #7ab8ff; }
+
+/* 聆听态：麦克风开启 —— 绿色 + 呼吸动画 */
+#voice-overlay[data-state="listening"] { --voice-accent: #4ecd78; }
+#voice-overlay[data-state="listening"] .voice-dot {
+  background: #4ecd78;
+  animation: voice-dot-breathe 1.1s ease-in-out infinite;
+}
+#voice-overlay[data-state="listening"] #voice-state-text {
+  color: #b8ffd0;
+}
+
+@keyframes voice-dot-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(78, 205, 120, 0.7); transform: scale(1); }
+  50% { box-shadow: 0 0 0 12px rgba(78, 205, 120, 0); transform: scale(1.25); }
+}
+
+/* 确认态：琥珀色 + 强边框，视觉权重最高 */
+#voice-overlay[data-state="confirm"] {
+  --voice-accent: #ffc94d;
+}
+#voice-overlay[data-state="confirm"] #voice-bar {
+  border-color: #ffc94d;
+  background: rgba(52, 42, 12, 0.95);
+}
+#voice-overlay[data-state="confirm"] #voice-state-text {
+  color: #ffe9a8;
+}
+
+/* 错误态：红色提示，但不遮挡主流程 */
+#voice-overlay[data-state="error"] { --voice-accent: #ff8a80; }
+#voice-overlay[data-state="error"] #voice-bar {
+  border-color: #ff8a80;
+  background: rgba(58, 22, 22, 0.95);
+}
+#voice-overlay[data-state="error"] #voice-state-text {
+  color: #ffd0cc;
+}
+
+/* ---------- 倒计时进度条 ---------- */
+#voice-progress {
+  height: 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+#voice-progress-fill {
+  height: 100%;
+  width: 100%;
+  border-radius: 6px;
+  background: var(--voice-accent, #4ecd78);
+  transition: width 0.2s linear, background var(--transition-fast);
+}
+
+/* 时间不足 30% 时进度条转红，制造"快结束了"的紧迫感 */
+#voice-progress-fill[data-urgent="1"] {
+  background: #ff8a80;
+}
+
+/* ---------- 快捷键常驻提示 ---------- */
+#voice-hotkey-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-radius: var(--radius-btn);
+  background: rgba(12, 15, 20, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 1px;
+}
+
+.voice-hint-sep {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+#voice-hotkey-hint kbd {
+  display: inline-block;
+  padding: 1px 8px;
+  margin-right: 4px;
+  border-radius: 4px;
+  background: #3a3f47;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* ---------- 确认卡片（右侧栏内竖排：大字候选 + 两个大按钮） ---------- */
+#voice-confirm-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 14px 16px 16px;
+  border-radius: var(--radius-card);
+  background: rgba(12, 15, 20, 0.98);
+  border: 3px solid #ffc94d;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+#voice-confirm-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #aeb5c2;
+}
+
+/* 候选棋步 —— 最大字号，视觉第一优先级 */
+#voice-confirm-notation {
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 5px;
+  color: #ffe9a8;
+  text-shadow: 0 3px 10px rgba(0, 0, 0, 0.7);
+  line-height: 1.1;
+}
+
+#voice-confirm-squares {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #7be8a2;
+  font-variant-numeric: tabular-nums;
+}
+
+#voice-confirm-hint {
+  font-size: 13px;
+  color: #aeb5c2;
+  letter-spacing: 1px;
+  margin-top: 2px;
+}
+
+#voice-confirm-hint kbd {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: #3a3f47;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  font-family: inherit;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* ---------- 大按钮（震颤下的点击容错）：左右并排，充分利用 540px 栏宽 ---------- */
+#voice-confirm-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.voice-big-btn {
+  flex: 1;
+  min-height: 72px;
+  padding: 0 8px;
+  border-radius: var(--radius-btn);
+  font-size: 25px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform var(--transition-fast), filter var(--transition-fast);
+  user-select: none;
+}
+
+.voice-big-btn:hover { transform: translateY(-2px); filter: brightness(1.1); }
+.voice-big-btn:active { transform: translateY(1px); }
+
+.voice-big-btn-ok {
+  background: linear-gradient(180deg, #2e9e5b 0%, #1c6b3c 100%);
+  border-color: #4ecd78;
+  color: #ffffff;
+}
+
+.voice-big-btn-no {
+  background: linear-gradient(180deg, #4a4f58 0%, #2f333b 100%);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #d7dce4;
+}
+
+/* 窄屏（右侧栏落到棋盘下方）：保持横排按钮，压缩字号 */
+@media (max-width: 1200px) {
+  #voice-state-text { font-size: 22px; }
+  #voice-confirm-notation { font-size: 38px; letter-spacing: 4px; }
+  #voice-confirm-squares { font-size: 16px; }
+  .voice-big-btn { min-height: 64px; font-size: 22px; }
+}
+
+/* 尊重系统的"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  #voice-overlay[data-state="listening"] .voice-dot { animation: none; }
+  .voice-big-btn, #voice-progress-fill { transition: none; }
+}

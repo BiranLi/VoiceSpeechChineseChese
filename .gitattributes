@@ -1,0 +1,31 @@
+# 统一行尾策略，避免 macOS(开发) 与 Windows 之间来回迁移产生噪音 diff / 破坏脚本。
+#
+# 背景：Windows 上 core.autocrlf=true 会把工作区所有文本文件变成 CRLF，
+#       导致 .sh 脚本在 Windows 工作区无法执行，且 CRLF 可能被提交进仓库弄坏 Linux CI。
+
+# 默认：仓库内一律存 LF，工作区在所有平台都检出为 LF
+* text=auto eol=lf
+
+# Windows 批处理必须用 CRLF，否则 cmd.exe 解析会出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# .bat 内含中文，必须以 GBK(936) 交付给 Windows 的 cmd.exe。
+# cmd.exe 按 OEM 代码页跟踪批处理文件的字节偏移，解析 UTF-8 时遇到多字节字符
+# 会产生累积漂移，把后续行的行首吞掉（表现为 "'xxx' is not recognized"），
+# 而 chcp 65001 无法规避。这里用 working-tree-encoding 让仓库内统一存 UTF-8，
+# 检出到工作区时自动转成 GBK，兼顾仓库可读性与 Windows 可执行性。
+*.bat working-tree-encoding=GBK
+
+# 二进制资源，禁止任何行尾/编码转换
+*.wasm binary
+*.gif  binary
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+
+# 明确按二进制处理的第三方引擎产物
+js/worker/eleeye.wasm binary

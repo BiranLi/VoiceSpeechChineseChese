@@ -131,7 +131,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }, 500);
       } else if (gameMode === 'pve') {
         updateAiCurrentStatus('AI 落子完成。轮到玩家思考落子...');
-        maybeAutoListen(); // 语音模式开启时，AI 走完自动重新收音
+        armVoiceTurn(); // 轮到玩家：进入"休息 -> 限时聆听窗口"调度，而非常开麦克风
       }
     }
   }
@@ -333,8 +333,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (gamePaused) {
       updateAiCurrentStatus('对局已暂停。点击“继续”恢复对局。');
+      onVoicePauseChanged(true);
     } else {
       updateAiCurrentStatus('对局继续。');
+      onVoicePauseChanged(false);
       // 若暂停前轮到 AI 思考（机机对战 / 人机轮到 AI），恢复后重新触发搜索
       if (gameMode === 'eve') {
         triggerAiThink();
@@ -368,14 +370,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // 结束对局：重置棋局，返回主菜单
   function handleStop() {
-    // 若正在录音，先取消
-    if (chessVoice && isListening) {
-      isListening = false;
-      if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
-      chessVoice.stopAuto();
-    }
-    voiceEnabled = false; // 结束对局时关闭语音模式
-    if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
+    // 彻底关闭语音：释放麦克风、清空候选、隐藏浮层
+    stopVoiceMode();
 
     gamePaused = false;
     updatePauseBtnLabel(false);
@@ -402,58 +398,267 @@ document.addEventListener('DOMContentLoaded', function () {
   if (undoBtn) undoBtn.addEventListener('click', handleUndo);
   if (stopBtn) stopBtn.addEventListener('click', handleStop);
 
-  // ============ 语音控制下棋（自动收音 + VAD） ============
+  // ==========================================================================
+  // 语音控制下棋 —— 分回合 · 限时窗口 · 两段确认
+  // --------------------------------------------------------------------------
+  // 为震颤 / 构音障碍 / 认知疲劳人群设计，与旧版"AI 走完常开免按键"的差别：
+  //   1) 麦克风不再常开：只在"轮到玩家"时按 休息 -> 限时聆听窗口 调度，
+  //      窗口到点自动关闭，杜绝思考期全程收音造成的误触发。
+  //   2) 识别结果不直接落子：先进确认卡片（棋盘高亮起点->终点），
+  //      玩家用 空格 / 大按钮 / 说"走" 才真正提交。误识别可零成本反悔。
+  //   3) 错误路径不再无条件重开收音，改由回合调度统一接管，并带失败看门狗。
+  //   4) 反馈走常驻浮层（大字 + 倒计时 + 颜色状态），不再被下一句瞬时覆盖。
+  // ==========================================================================
+
+  const TURN = window.ChessVoice.TURN;   // restMs / listenMs / confirmMs / maxFailures
+
+  // ---- 命令词（语音可达所有关键操作，键盘与大按钮为兜底） ----
+  const CMD = {
+    accept: ['走', '确认', '对', '好', '可以', '行', '是', '没错', 'ok', 'go'],
+    cancel: ['不', '不是', '不对', '取消', '重说', '再说', '重来', '换', '算了', '错', 'no'],
+    undo:   ['悔棋', '悔一步', '退回', '反悔', '撤销', '撤回'],
+    mute:   ['停', '安静', '别听了', '关闭语音', '停止']
+  };
+
+  // 归一化 ASR 文本：去标点、空白，便于命令词前缀匹配
+  function normalizeSpeech(text) {
+    return String(text || '')
+      .replace(/[\s\u3000。，、,.!?！？；;：:~·"'""''（）()]/g, '')
+      .toLowerCase();
+  }
+
+  // 判断文本是否命中某个命令词集合
+  function matchCommand(text, words) {
+    const s = normalizeSpeech(text);
+    if (!s) return false;
+    for (let i = 0; i < words.length; i++) {
+      if (s === words[i] || s.indexOf(words[i]) === 0 || s.indexOf(words[i]) >= 0) return true;
+    }
+    return false;
+  }
+
+  // 棋盘格子 -> 人类可读坐标（红方视角：列 a-i，行 1-10）
+  const FILES = 'abcdefghi';
+  function sqLabel(sq) {
+    if (typeof sq !== 'number' || sq < 0 || sq > 89) return '?';
+    const row = Math.floor(sq / 9);
+    const col = sq % 9;
+    return FILES[col] + (10 - row);
+  }
+
+  // ---- 浮层 DOM ----
+  const voiceOverlay = document.getElementById('voice-overlay');
+  const voiceStateText = document.getElementById('voice-state-text');
+  const voiceCountdown = document.getElementById('voice-countdown');
+  const voiceCountdownNum = document.getElementById('voice-countdown-num');
+  const voiceProgressFill = document.getElementById('voice-progress-fill');
+  const voiceConfirmCard = document.getElementById('voice-confirm-card');
+  const voiceConfirmNotation = document.getElementById('voice-confirm-notation');
+  const voiceConfirmSquares = document.getElementById('voice-confirm-squares');
+  const voiceAcceptBtn = document.getElementById('voice-accept');
+  const voiceRejectBtn = document.getElementById('voice-reject');
 
   let chessVoice = null;
-  let voiceEnabled = false;   // 语音模式是否开启
-  let isListening = false;    // 当前是否正在自动收音（VAD 监听中）
+  let voiceEnabled = false;      // 语音模式是否开启
+  let pendingMove = null;        // 待确认的候选棋步 { from, to, notation, raw }
 
-  // 语音识别结果 → 记谱解析 → 落子
-  function handleVoiceText(text) {
+  // 更新浮层视觉状态
+  function setVoiceState(state, text) {
+    if (voiceOverlay) {
+      voiceOverlay.classList.remove('hide');
+      voiceOverlay.setAttribute('data-state', state);
+    }
+    if (voiceStateText) voiceStateText.innerText = text || '';
+    if (voiceBtn) voiceBtn.classList.toggle('recording', state === 'listening');
+  }
+
+  function hideVoiceOverlay() {
+    if (voiceOverlay) {
+      voiceOverlay.classList.add('hide');
+      voiceOverlay.removeAttribute('data-state');
+    }
+    if (voiceCountdown) voiceCountdown.classList.add('hide');
+    if (voiceConfirmCard) voiceConfirmCard.classList.add('hide');
+    if (voiceBtn) voiceBtn.classList.remove('recording');
+  }
+
+  // 倒计时回调：进度条 + 剩余秒数；低于 30% 转红提示"快结束了"
+  function handleVoiceTick(remainingMs, totalMs) {
+    if (voiceCountdown && voiceCountdownNum) {
+      voiceCountdown.classList.remove('hide');
+      voiceCountdownNum.innerText = (remainingMs / 1000).toFixed(1);
+    }
+    if (voiceProgressFill) {
+      const ratio = totalMs > 0 ? Math.max(0, Math.min(1, remainingMs / totalMs)) : 0;
+      voiceProgressFill.style.width = (ratio * 100).toFixed(1) + '%';
+      voiceProgressFill.setAttribute('data-urgent', ratio < 0.3 ? '1' : '0');
+    }
+  }
+
+  // ---------------- 回合调度 ----------------
+
+  // 只有"语音开启 + 人机模式 + 轮到玩家 + 未暂停"才排一次回合。
+  // 取代旧版在每个错误分支里无条件调用 maybeAutoListen() 的做法。
+  function armVoiceTurn() {
+    if (!voiceEnabled || !chessVoice) return;
+    if (gameMode !== 'pve') return;
+    if (gamePaused) return;
+    if (game.turn !== playerSide) return;  // 轮到 AI，不收音
+    chessVoice.armTurn();
+  }
+
+  // 语音回合的唯一裁决入口：可能是棋步，也可能是命令词
+  function handleVoiceCommand(text) {
     if (!text) return;
-    updateAiCurrentStatus(`🎙️ 识别: ${text}`);
 
+    // 1) 先判命令词（聆听态下玩家可能想取消/悔棋/闭嘴）
+    if (matchCommand(text, CMD.mute)) {
+      stopVoiceMode();
+      updateAiCurrentStatus('🎙️ 语音已关闭。随时可以点“语音”重新开启。');
+      return;
+    }
+    if (matchCommand(text, CMD.undo)) {
+      clearPendingMove();
+      chessVoice.armTurn();
+      handleUndo();
+      return;
+    }
+    if (matchCommand(text, CMD.cancel)) {
+      clearPendingMove();
+      if (chessVoice.mode === 'confirm') chessVoice.cancelConfirm();
+      else chessVoice.armTurn();
+      updateAiCurrentStatus('🎙️ 好的，请再说一次…');
+      return;
+    }
+    if (matchCommand(text, CMD.accept)) {
+      if (pendingMove) {
+        acceptPendingMove();
+        return;
+      }
+      // 没有待确认的候选时，"走/好"理解为放弃本轮并重开窗口
+      chessVoice.armTurn();
+      return;
+    }
+
+    // 2) 不是命令词 -> 当作新棋步候选，重新解析并更新确认卡片
+    proposeFromText(text);
+  }
+
+  // 解析棋谱并进入确认态（不落子）
+  function proposeFromText(text) {
     if (gamePaused) {
-      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 对局已暂停，请先点击“继续”`);
+      setVoiceState('error', '对局已暂停，请先点“继续”');
+      updateAiCurrentStatus('🎙️ 对局已暂停，请先点击“继续”再使用语音');
+      chessVoice.noteFailure();
       return;
     }
     if (gameMode === 'eve') {
-      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 机机对战模式不支持语音操控`);
+      setVoiceState('error', '机机对战不支持语音');
+      updateAiCurrentStatus('🎙️ 机机对战模式不支持语音操控');
       return;
     }
 
     const result = parseChessNotation(game, text);
     if (result.error) {
+      // 解析失败：不落子、不开新一轮窗口，只把错误显示出来并重开本轮窗口
+      setVoiceState('error', '没听清，请再说一次');
       updateAiCurrentStatus(`🎙️ ${result.error}`);
-      maybeAutoListen(); // 解析失败，重新开始收音
+      chessVoice.noteFailure();
+      clearPendingMove();
+      board.render(game, lastMove);
+      chessVoice.armTurn();
       return;
     }
 
-    // 人机对战时校验是否轮到玩家阵营
+    // 人机模式校验阵营
     const fromPiece = game.board[result.from];
     if (gameMode === 'pve' && fromPiece && fromPiece.color !== playerSide) {
-      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 现在轮到${playerSide === 'r' ? '黑方' : '红方'}，不能说己方之外的着法`);
-      maybeAutoListen();
+      const sideName = playerSide === 'r' ? '红方' : '黑方';
+      setVoiceState('error', `现在是${sideName}走`);
+      updateAiCurrentStatus(`🎙️ 识别: ${text} —— 现在轮到${sideName}，不能说己方之外的着法`);
+      chessVoice.noteFailure();
+      clearPendingMove();
+      chessVoice.armTurn();
       return;
     }
 
-    // 复用人类落子入口（含 AI 应手、胜负判定、统计表）
-    handleHumanMove(result.from, result.to);
-    updateAiCurrentStatus(`🎙️ 已落子: ${result.notation}（${text}）`);
-    // 落子后轮到 AI 思考，自动模式会在 AI 落子后由 maybeAutoListen 重新收音
+    // 合法性兜底（记谱解析通过但仍需引擎裁决）
+    if (game.isLegalMove && !game.isLegalMove(result.from, result.to)) {
+      setVoiceState('error', '这一步走不了');
+      updateAiCurrentStatus(`🎙️ 识别: ${text} —— ${result.notation} 不符合规则，请换一步`);
+      chessVoice.noteFailure();
+      clearPendingMove();
+      chessVoice.armTurn();
+      return;
+    }
+
+    pendingMove = {
+      from: result.from,
+      to: result.to,
+      notation: result.notation,
+      raw: text
+    };
+
+    // 确认卡片 + 棋盘起点->终点高亮
+    if (voiceConfirmNotation) voiceConfirmNotation.innerText = result.notation;
+    if (voiceConfirmSquares) {
+      voiceConfirmSquares.innerText = `起点 ${sqLabel(result.from)} → 落点 ${sqLabel(result.to)}`;
+    }
+    if (voiceConfirmCard) voiceConfirmCard.classList.remove('hide');
+    setVoiceState('confirm', '确认这一步？');
+    // 棋盘上高亮候选（复用 lastMove 渲染通路）
+    board.render(game, { from: result.from, to: result.to });
+    updateAiCurrentStatus(`🎙️ 听到: ${text} → 候选 ${result.notation}，按空格确认`);
+
+    // 进入确认态：麦克风保持开启以支持语音"走/不"，并有独立倒计时
+    chessVoice.enterConfirm();
   }
 
-  // 条件重新收音：语音开启 + 人机模式 + 轮到玩家 + 未暂停 → resume VAD
-  function maybeAutoListen() {
-    if (!voiceEnabled || !chessVoice) return;
-    if (gameMode !== 'pve') return;
-    if (gamePaused) return;
-    if (game.turn !== playerSide) return; // 轮到 AI，不收音
-    chessVoice.resume();
-    updateAiCurrentStatus('🎙️ 请说棋步…');
+  // 确认：真正落子
+  function acceptPendingMove() {
+    if (!pendingMove) return;
+    const mv = pendingMove;
+    pendingMove = null;
+    if (voiceConfirmCard) voiceConfirmCard.classList.add('hide');
+
+    // 结束本回合，收起浮层麦克风状态
+    chessVoice.acceptConfirmed();
+    if (voiceOverlay) voiceOverlay.setAttribute('data-state', 'rest');
+    chessVoice.resetFailures();
+
+    updateAiCurrentStatus(`🎙️ 已落子: ${mv.notation}`);
+    // 复用人类落子唯一入口（含 AI 应手、胜负判定、统计表）
+    handleHumanMove(mv.from, mv.to);
+    // AI 落子后由 handleAiBestMove 再次调用 armVoiceTurn()
   }
 
-  // 语音按钮：开关语音模式（开启后自动收音，AI 走完直接说棋步）
+  // 取消：清候选、棋盘恢复原状、重开本轮窗口
+  function rejectPendingMove() {
+    if (!pendingMove) return;
+    pendingMove = null;
+    if (voiceConfirmCard) voiceConfirmCard.classList.add('hide');
+    board.render(game, lastMove);
+    setVoiceState('listening', '好的，请再说一次…');
+    updateAiCurrentStatus('🎙️ 已取消，请再说一次…');
+    if (chessVoice) chessVoice.cancelConfirm();
+  }
+
+  function clearPendingMove() {
+    pendingMove = null;
+    if (voiceConfirmCard) voiceConfirmCard.classList.add('hide');
+  }
+
+  // 关闭语音模式：释放麦克风 + 清空候选 + 隐藏浮层
+  function stopVoiceMode() {
+    clearPendingMove();
+    if (chessVoice) chessVoice.stopAuto();
+    voiceEnabled = false;
+    if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
+    hideVoiceOverlay();
+  }
+
+  // ---------------- 语音按钮 / 键盘 / 大按钮 ----------------
+
   if (voiceBtn) {
     voiceBtn.addEventListener('click', async function () {
       if (gamePaused) {
@@ -465,22 +670,51 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
+      if (voiceEnabled) {
+        stopVoiceMode();
+        updateAiCurrentStatus('语音控制已关闭');
+        return;
+      }
+
       if (!chessVoice) {
         chessVoice = new ChessVoice({
-          onStatus: updateAiCurrentStatus,
-          onResult: handleVoiceText,
+          onStatus: function (msg) { updateAiCurrentStatus(msg); },
+          onResult: handleVoiceCommand,
+          onCommand: function (text) {
+            // 确认态的识别结果与内部超时信号都走这里
+            if (text === 'confirm-timeout') {
+              clearPendingMove();
+              board.render(game, lastMove);
+              updateAiCurrentStatus('🎙️ 确认超时，请再说一次…');
+              chessVoice.armTurn();
+              return;
+            }
+            if (text === 'give-up') {
+              setVoiceState('error', '语音已停止，请手动点选');
+              updateAiCurrentStatus('🎙️ 连续多次没听清，语音已暂停。请点击棋盘手动落子，或再点“语音”重试。');
+              voiceEnabled = false;
+              if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
+              if (chessVoice) chessVoice.pause();
+              return;
+            }
+            handleVoiceCommand(text);
+          },
           onError: function (msg) {
             updateAiCurrentStatus('🎙️ ' + msg);
-            isListening = false;
-            if (voiceBtn) voiceBtn.classList.remove('recording');
-            maybeAutoListen(); // 识别失败（网络/空结果）后若仍在玩家回合，恢复自动收音
+            setVoiceState('error', msg);
+            if (chessVoice) {
+              chessVoice.noteFailure();
+              chessVoice.armTurn();
+            }
           },
           onStateChange: function (state) {
-            isListening = (state === 'listening');
-            if (voiceBtn) {
-              voiceBtn.classList.toggle('recording', state === 'listening');
-            }
-          }
+            // 视觉必须与麦克风真实状态一致：患者只能靠这个判断"现在能不能说话"。
+            // 'confirm' 由 proposeFromText 自行渲染候选文案，此处不覆盖。
+            if (state === 'rest') setVoiceState('rest', '稍后轮到你…');
+            else if (state === 'calibrating') setVoiceState('calibrating', '正在校准麦克风…');
+            else if (state === 'listening') setVoiceState('listening', '该你了，请说棋步…');
+          },
+          onTick: handleVoiceTick
         });
       }
 
@@ -489,31 +723,73 @@ document.addEventListener('DOMContentLoaded', function () {
         return;
       }
 
-      if (voiceEnabled) {
-        // 关闭语音模式
-        voiceEnabled = false;
-        isListening = false;
-        chessVoice.stopAuto();
-        if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
-        updateAiCurrentStatus('语音控制已关闭');
-      } else {
-        // 开启语音模式
-        voiceEnabled = true;
-        if (voiceBtn) voiceBtn.classList.add('voice-on');
-        try {
-          await chessVoice.startAuto();
-          if (game.turn !== playerSide) {
-            // 当前轮到 AI，先暂停收音，AI 落子后再听
-            chessVoice.pause();
-            updateAiCurrentStatus('🎙️ 语音已开启。轮到 AI，AI 落子后将自动收音…');
-          }
-          // 轮到玩家则由 startAuto 直接进入监听
-        } catch (err) {
-          voiceEnabled = false;
-          if (voiceBtn) voiceBtn.classList.remove('recording', 'voice-on');
-          updateAiCurrentStatus('🎙️ 无法访问麦克风: ' + (err && err.message ? err.message : err));
+      voiceEnabled = true;
+      if (voiceBtn) voiceBtn.classList.add('voice-on');
+      setVoiceState('calibrating', '正在校准麦克风…');
+      try {
+        await chessVoice.startAuto();
+        if (game.turn !== playerSide) {
+          // 当前轮到 AI：先静默，等 AI 落子后再由 armVoiceTurn 排窗口
+          chessVoice.pause();
+          setVoiceState('rest', 'AI 正在思考…');
+          updateAiCurrentStatus('🎙️ 语音已开启。等 AI 走完后会提示你，请先不要说话。');
+        } else {
+          setVoiceState('rest', '稍后轮到你…');
         }
+      } catch (err) {
+        voiceEnabled = false;
+        if (voiceBtn) voiceBtn.classList.remove('voice-on');
+        hideVoiceOverlay();
+        updateAiCurrentStatus('🎙️ 无法访问麦克风: ' + (err && err.message ? err.message : err));
       }
     });
+  }
+
+  if (voiceAcceptBtn) voiceAcceptBtn.addEventListener('click', acceptPendingMove);
+  if (voiceRejectBtn) voiceRejectBtn.addEventListener('click', rejectPendingMove);
+
+  // 键盘快捷键 —— 震颤患者点不准小按钮时，键盘是可靠输入通道
+  //   空格 / 回车 : 上下文复用
+  //                · 有待确认候选时 = 确认落子
+  //                · 无候选时       = 立即开启收音窗口（跳过剩余休息时间；
+  //                                  窗口已开则重置为完整窗口）
+  //   Esc         : 取消候选，重新说一次
+  document.addEventListener('keydown', function (e) {
+    if (!voiceEnabled) return;
+    if (gameMode !== 'pve') return;
+
+    if (e.key === 'Escape') {
+      if (pendingMove) {
+        e.preventDefault();
+        rejectPendingMove();
+      }
+      return;
+    }
+
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();   // 避免空格滚动页面 / 回车二次触发聚焦按钮
+      if (pendingMove) {
+        acceptPendingMove();
+      } else if (chessVoice) {
+        // 立即收音：不必等休息态走完，玩家自己掌握节奏
+        clearPendingMove();
+        chessVoice.openNow(TURN.listenMs);
+        updateAiCurrentStatus('🎙️ 正在收音，请说棋步…');
+      }
+    }
+  });
+
+  // 对局暂停/恢复时同步语音状态（由 togglePause 调用）
+  function onVoicePauseChanged(paused) {
+    if (!voiceEnabled || !chessVoice) return;
+    if (paused) {
+      clearPendingMove();
+      board.render(game, lastMove);
+      chessVoice.pause();
+      setVoiceState('rest', '对局已暂停');
+    } else {
+      setVoiceState('rest', '稍后轮到你…');
+      armVoiceTurn();
+    }
   }
 });
