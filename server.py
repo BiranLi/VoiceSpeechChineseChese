@@ -16,14 +16,13 @@ from __future__ import annotations
 import argparse
 import contextlib
 import functools
+import http.client
 import json
 import mimetypes
 import os
 import socket
 import sys
-import urllib.error
 import urllib.parse
-import urllib.request
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -45,13 +44,10 @@ DASHSCOPE_NATIVE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/mult
 # 多进程并发（fork）仅在 POSIX 平台可用，Windows 没有 os.fork()。
 # 因此这里按能力探测动态定义 ForkingHTTPServer；Windows 上自动回退到多线程并发。
 FORKING_SUPPORTED = hasattr(os, "fork")
-if FORKING_SUPPORTED:
-    try:
-        from socketserver import ForkingMixIn
-    except ImportError:  # 防御性：个别平台实现可能缺失
-        FORKING_SUPPORTED = False
 
 if FORKING_SUPPORTED:
+    # POSIX：fork 与 socketserver.ForkingMixIn 同源于标准库，必然共存，无需 try/except 防御
+    from socketserver import ForkingMixIn
 
     class ForkingHTTPServer(ForkingMixIn, HTTPServer):
         """POSIX 多进程并发服务器（Windows 上不可用，会回退为多线程）"""
@@ -132,28 +128,31 @@ class MultiProcessStaticHandler(SimpleHTTPRequestHandler):
             raise RuntimeError(f"百炼返回格式异常: {json.dumps(resp, ensure_ascii=False)[:300]}") from None
 
     def _post_json(self, url: str, body: dict):
-        """向百炼发起 JSON POST 请求并解析响应"""
-        # 安全审计：仅允许 http/https，杜绝 file: 等自定义 scheme
-        scheme = urllib.parse.urlparse(url).scheme.lower()
-        if scheme not in ("http", "https"):
-            raise RuntimeError(f"拒绝访问非 http(s) 地址: {url}")
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.asr_api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        """向百炼发起 JSON POST 请求并解析响应（http.client 直连，仅允许 https）"""
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise RuntimeError(f"拒绝访问非 https 地址: {url}")
+
+        conn = http.client.HTTPSConnection(parsed.netloc, timeout=30)
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"百炼 HTTP {exc.code}: {detail[:300]}") from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"无法连接百炼: {exc.reason}") from exc
+            conn.request(
+                "POST",
+                parsed.path,
+                body=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {self.asr_api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace")
+            if resp.status != 200:
+                raise RuntimeError(f"百炼 HTTP {resp.status}: {raw[:300]}")
+            return json.loads(raw)
+        except (http.client.HTTPException, OSError) as exc:
+            raise RuntimeError(f"无法连接百炼: {exc}") from exc
+        finally:
+            conn.close()
 
     def _send_json(self, status: int, obj: dict) -> None:
         data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
